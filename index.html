@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="VitallyOne" />
+  <title>VitallyOne</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #F5F6F2; font-family: 'Avenir Next','Segoe UI',system-ui,sans-serif; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+    const { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } = Recharts;
+
+    /* ---- localStorage helpers ---- */
+    function load(key, def) {
+      try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch { return def; }
+    }
+    function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
+    function usePersist(key, def) {
+      const [val, setVal] = useState(() => load(key, def));
+      const setter = (v) => { const next = typeof v === 'function' ? v(val) : v; save(key, next); setVal(next); };
+      return [val, setter];
+    }
+
+
+
+/* ============================================================
+   VitallyOne — panel de vida personal todo-en-uno
+   Nota: los datos viven en memoria durante la sesión.
+   ============================================================ */
+
+const C = {
+  bg: "#F5F6F2",
+  panel: "#FFFFFF",
+  ink: "#17212B",
+  inkSoft: "#5B6672",
+  line: "#E4E7E0",
+  pine: "#2F6B5E",
+  pineSoft: "#E3EFEB",
+  amber: "#C98A2D",
+  amberSoft: "#F7EDDC",
+  plum: "#7A4E8C",
+  plumSoft: "#F0E7F5",
+  sky: "#2E6FA3",
+  skySoft: "#E3EEF7",
+  rose: "#B14A5F",
+  roseSoft: "#F7E6EA",
+  slate: "#44606E",
+};
+
+const MODULES = [
+  { id: "resumen", icon: "📊", label: "Resumen" },
+  { id: "nutricion", icon: "🍎", label: "Nutrición" },
+  { id: "finanzas", icon: "💰", label: "Finanzas" },
+  { id: "sueno", icon: "😴", label: "Sueño" },
+  { id: "calendario", icon: "📅", label: "Calendario" },
+  { id: "diario", icon: "📔", label: "Diario" },
+  { id: "habitos", icon: "✅", label: "Hábitos" },
+  { id: "enfoque", icon: "⏱️", label: "Enfoque" },
+  { id: "metas", icon: "🎯", label: "Metas" },
+  { id: "notas", icon: "📝", label: "Notas" },
+  { id: "tendencias", icon: "📈", label: "Tendencias" },
+];
+
+/* ---------- utilidades de fechas ---------- */
+const pad = (n) => String(n).padStart(2, "0");
+const dstr = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const today = () => dstr(new Date());
+const addDays = (s, n) => { const d = new Date(s + "T12:00:00"); d.setDate(d.getDate() + n); return dstr(d); };
+const PERIODS = { dia: 1, semana: 7, mes: 30, trimestre: 90 };
+const PERIOD_LABEL = { dia: "Hoy", semana: "7 días", mes: "30 días", trimestre: "90 días" };
+const inLastDays = (date, n, ref = today()) => date <= ref && date > addDays(ref, -n);
+const inPrevWindow = (date, n, ref = today()) => date <= addDays(ref, -n) && date > addDays(ref, -2 * n);
+const fmtDay = (s) => { const d = new Date(s + "T12:00:00"); return d.toLocaleDateString("es-ES", { day: "numeric", month: "short" }); };
+const fmtLong = (s) => { const d = new Date(s + "T12:00:00"); return d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" }); };
+const uid = () => Math.random().toString(36).slice(2, 9);
+const eur = (n) => n.toLocaleString("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const pct = (a, b) => (b === 0 ? null : Math.round(((a - b) / b) * 100));
+
+/* ---------- estado inicial vacío ---------- */
+const S = { meals: [], expenses: [], sleep: [], journal: [], focus: [], habitDone: {} };
+
+/* ---------- primitivas de UI ---------- */
+const Card = ({ children, style }) => (
+  <div style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14, padding: 16, ...style }}>{children}</div>
+);
+const H = ({ children, sub }) => (
+  <div style={{ marginBottom: 14 }}>
+    <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.3 }}>{children}</div>
+    {sub && <div style={{ fontSize: 13, color: C.inkSoft, marginTop: 2 }}>{sub}</div>}
+  </div>
+);
+const Label = ({ children }) => (
+  <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.8, color: C.inkSoft, marginBottom: 6 }}>{children}</div>
+);
+const Btn = ({ children, onClick, tone = C.pine, ghost, small, disabled }) => (
+  <button onClick={onClick} disabled={disabled} style={{
+    background: ghost ? "transparent" : tone, color: ghost ? tone : "#fff",
+    border: ghost ? `1.5px solid ${tone}` : "none", borderRadius: 10,
+    padding: small ? "6px 10px" : "9px 14px", fontSize: small ? 12 : 14, fontWeight: 600,
+    cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
+  }}>{children}</button>
+);
+const Input = (props) => (
+  <input {...props} style={{
+    width: "100%", boxSizing: "border-box", padding: "9px 11px", borderRadius: 10,
+    border: `1px solid ${C.line}`, fontSize: 14, background: "#FBFCFA", color: C.ink, ...props.style,
+  }} />
+);
+const Select = ({ value, onChange, options }) => (
+  <select value={value} onChange={onChange} style={{
+    width: "100%", padding: "9px 11px", borderRadius: 10, border: `1px solid ${C.line}`,
+    fontSize: 14, background: "#FBFCFA", color: C.ink,
+  }}>
+    {options.map((o) => <option key={o} value={o}>{o}</option>)}
+  </select>
+);
+const PeriodTabs = ({ value, onChange, includeDay = true }) => (
+  <div style={{ display: "inline-flex", background: "#EDEFE9", borderRadius: 10, padding: 3, gap: 2 }}>
+    {Object.keys(PERIODS).filter((p) => includeDay || p !== "dia").map((p) => (
+      <button key={p} onClick={() => onChange(p)} style={{
+        border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+        background: value === p ? C.panel : "transparent", color: value === p ? C.ink : C.inkSoft,
+        boxShadow: value === p ? "0 1px 3px rgba(0,0,0,.08)" : "none",
+      }}>{p === "dia" ? "Día" : p === "semana" ? "Semana" : p === "mes" ? "Mes" : "Trimestre"}</button>
+    ))}
+  </div>
+);
+const Stat = ({ label, value, sub, tone = C.ink }) => (
+  <div style={{ flex: 1, minWidth: 110 }}>
+    <div style={{ fontSize: 12, color: C.inkSoft, fontWeight: 600 }}>{label}</div>
+    <div style={{ fontSize: 22, fontWeight: 800, color: tone, letterSpacing: -0.4 }}>{value}</div>
+    {sub && <div style={{ fontSize: 12, color: C.inkSoft }}>{sub}</div>}
+  </div>
+);
+const Progress = ({ value, max, tone = C.pine }) => {
+  const r = Math.min(100, max > 0 ? (value / max) * 100 : 0);
+  return (
+    <div style={{ height: 9, background: "#EDEFE9", borderRadius: 6, overflow: "hidden" }}>
+      <div style={{ width: `${r}%`, height: "100%", background: tone, borderRadius: 6, transition: "width .4s" }} />
+    </div>
+  );
+};
+const Delta = ({ now, prev, invert }) => {
+  const p = pct(now, prev);
+  if (p === null || !isFinite(p)) return null;
+  const good = invert ? p < 0 : p > 0;
+  return (
+    <span style={{ fontSize: 12, fontWeight: 700, color: p === 0 ? C.inkSoft : good ? C.pine : C.rose }}>
+      {p > 0 ? "▲" : p < 0 ? "▼" : "•"} {Math.abs(p)}% vs periodo anterior
+    </span>
+  );
+};
+
+/* ============================================================ APP */
+function VitallyOne() {
+  const [tab, setTab] = useState("resumen");
+  const [toast, setToast] = useState(null);
+
+  /* --- estado global --- */
+  const [meals, setMeals] = usePersist('vo_meals', []);
+  const [nutriGoal, setNutriGoal] = usePersist('vo_nutriGoal', { kcal: 2200, p: 130, c: 240, f: 70 });
+  const [expenses, setExpenses] = usePersist('vo_expenses', []);
+  const [alloc, setAlloc] = usePersist('vo_alloc', [{ id: 'a1', name: 'Vivienda', pctVal: 30 }, { id: 'a2', name: 'Gastos fijos', pctVal: 20 }, { id: 'a3', name: 'Ahorro', pctVal: 20 }, { id: 'a4', name: 'Inversión', pctVal: 15 }, { id: 'a5', name: 'Ocio', pctVal: 15 }]);
+  const [income, setIncome] = usePersist('vo_income', 1800);
+  const [savGoals, setSavGoals] = usePersist('vo_savGoals', []);
+  const [sleep, setSleep] = usePersist('vo_sleep', []);
+  const [events, setEvents] = usePersist('vo_events', []);
+  const [journal, setJournal] = usePersist('vo_journal', []);
+  const [habits, setHabits] = usePersist('vo_habits', []);
+  const [habitDone, setHabitDone] = usePersist('vo_habitDone', {});
+  const [focusLog, setFocusLog] = usePersist('vo_focusLog', []);
+  const [subjects, setSubjects] = usePersist('vo_subjects', []);
+  const [goals, setGoals] = usePersist('vo_goals', []);
+  const [notes, setNotes] = usePersist('vo_notes', []);
+
+  const notify = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3200); };
+
+  /* --- recordatorios de eventos mientras la app está abierta --- */
+  const notified = useRef(new Set());
+  useEffect(() => {
+    const t = setInterval(() => {
+      const now = new Date();
+      events.forEach((e) => {
+        if (!e.remind || notified.current.has(e.id)) return;
+        const dt = new Date(`${e.date}T${e.time || "00:00"}:00`);
+        const diff = (dt - now) / 60000;
+        if (diff > 0 && diff <= 15) { notified.current.add(e.id); notify(`🔔 En ${Math.round(diff)} min: ${e.title}`); }
+      });
+    }, 30000);
+    return () => clearInterval(t);
+  }, [events]);
+
+  const [isMobile, setIsMobile] = useState(typeof window !== "undefined" && window.innerWidth < 760);
+  useEffect(() => {
+    const f = () => setIsMobile(window.innerWidth < 760);
+    window.addEventListener("resize", f); return () => window.removeEventListener("resize", f);
+  }, []);
+
+  const shared = {
+    meals, setMeals, nutriGoal, setNutriGoal, expenses, setExpenses, alloc, setAlloc, income, setIncome,
+    savGoals, setSavGoals, sleep, setSleep, events, setEvents, journal, setJournal,
+    habits, setHabits, habitDone, setHabitDone, focusLog, setFocusLog, subjects, setSubjects,
+    goals, setGoals, notes, setNotes, notify, setTab,
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Avenir Next','Segoe UI',system-ui,sans-serif", display: "flex", flexDirection: isMobile ? "column" : "row" }}>
+      {/* barra lateral / superior */}
+      {!isMobile && (
+        <div style={{ width: 210, background: C.ink, padding: "22px 12px", display: "flex", flexDirection: "column", gap: 4, position: "sticky", top: 0, height: "100vh", boxSizing: "border-box" }}>
+          <div style={{ color: "#fff", fontSize: 21, fontWeight: 800, letterSpacing: -0.5, padding: "0 10px 16px" }}>
+            Vitally<span style={{ color: "#8FD3C0" }}>One</span>
+          </div>
+          {MODULES.map((m) => (
+            <button key={m.id} onClick={() => setTab(m.id)} style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "none",
+              background: tab === m.id ? "rgba(143,211,192,.16)" : "transparent",
+              color: tab === m.id ? "#8FD3C0" : "rgba(255,255,255,.72)", fontSize: 14, fontWeight: 600, cursor: "pointer", textAlign: "left",
+            }}><span>{m.icon}</span>{m.label}</button>
+          ))}
+        </div>
+      )}
+      {isMobile && (
+        <div style={{ position: "sticky", top: 0, zIndex: 20, background: C.ink, padding: "12px 12px 8px" }}>
+          <div style={{ color: "#fff", fontSize: 18, fontWeight: 800, marginBottom: 8 }}>Vitally<span style={{ color: "#8FD3C0" }}>One</span></div>
+          <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+            {MODULES.map((m) => (
+              <button key={m.id} onClick={() => setTab(m.id)} style={{
+                whiteSpace: "nowrap", border: "none", borderRadius: 999, padding: "7px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer",
+                background: tab === m.id ? "#8FD3C0" : "rgba(255,255,255,.1)", color: tab === m.id ? C.ink : "rgba(255,255,255,.8)",
+              }}>{m.icon} {m.label}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ flex: 1, padding: isMobile ? 14 : 26, maxWidth: 1080, width: "100%", boxSizing: "border-box", margin: "0 auto" }}>
+        {tab === "resumen" && <Resumen {...shared} />}
+        {tab === "nutricion" && <Nutricion {...shared} />}
+        {tab === "finanzas" && <Finanzas {...shared} />}
+        {tab === "sueno" && <Sueno {...shared} />}
+        {tab === "calendario" && <Calendario {...shared} />}
+        {tab === "diario" && <Diario {...shared} />}
+        {tab === "habitos" && <Habitos {...shared} />}
+        {tab === "enfoque" && <Enfoque {...shared} />}
+        {tab === "metas" && <Metas {...shared} />}
+        {tab === "notas" && <Notas {...shared} />}
+        {tab === "tendencias" && <Tendencias {...shared} />}
+      </div>
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", background: C.ink, color: "#fff", padding: "11px 18px", borderRadius: 12, fontSize: 14, fontWeight: 600, boxShadow: "0 6px 24px rgba(0,0,0,.25)", zIndex: 50 }}>
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================ NUTRICIÓN */
+function Nutricion({ meals, setMeals, nutriGoal, setNutriGoal, notify }) {
+  const [period, setPeriod] = useState("dia");
+  const [form, setForm] = useState({ name: "Comida", kcal: "", p: "", c: "", f: "" });
+  const [editGoal, setEditGoal] = useState(false);
+
+  const days = PERIODS[period];
+  const cur = meals.filter((m) => inLastDays(m.date, days));
+  const prev = meals.filter((m) => inPrevWindow(m.date, days));
+  const sum = (arr, k) => arr.reduce((a, x) => a + Number(x[k] || 0), 0);
+  const nDays = period === "dia" ? 1 : days;
+  const kcalAvg = Math.round(sum(cur, "kcal") / nDays);
+  const goalMet = Math.round((kcalAvg / nutriGoal.kcal) * 100);
+
+  const byDay = useMemo(() => {
+    const map = {};
+    for (let i = days - 1; i >= 0; i--) map[addDays(today(), -i)] = 0;
+    cur.forEach((m) => { map[m.date] = (map[m.date] || 0) + Number(m.kcal); });
+    return Object.entries(map).map(([d, v]) => ({ d: fmtDay(d), kcal: v }));
+  }, [meals, period]);
+
+  const add = () => {
+    if (!form.kcal) return;
+    setMeals([...meals, { id: uid(), date: today(), name: form.name, kcal: +form.kcal, p: +form.p || 0, c: +form.c || 0, f: +form.f || 0 }]);
+    setForm({ name: "Comida", kcal: "", p: "", c: "", f: "" });
+    notify("Comida registrada 🍎");
+  };
+
+  return (
+    <div>
+      <H sub="Calorías y macros por comida, con objetivo diario configurable">🍎 Nutrición</H>
+      <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+        <PeriodTabs value={period} onChange={setPeriod} />
+        <Btn ghost small onClick={() => setEditGoal(!editGoal)}>⚙️ Objetivo diario</Btn>
+      </div>
+
+      {editGoal && (
+        <Card style={{ marginBottom: 14, background: C.pineSoft, border: "none" }}>
+          <Label>Objetivo diario</Label>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 8 }}>
+            {[["kcal", "Calorías"], ["p", "Proteína (g)"], ["c", "Carbos (g)"], ["f", "Grasas (g)"]].map(([k, l]) => (
+              <div key={k}>
+                <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 4 }}>{l}</div>
+                <Input type="number" value={nutriGoal[k]} onChange={(e) => setNutriGoal({ ...nutriGoal, [k]: +e.target.value })} />
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <Stat label={`Calorías (media/${period === "dia" ? "hoy" : "día"})`} value={kcalAvg} sub={<Delta now={sum(cur, "kcal")} prev={sum(prev, "kcal")} invert />} tone={C.pine} />
+          <Stat label="Proteína" value={`${Math.round(sum(cur, "p") / nDays)} g`} sub={`obj. ${nutriGoal.p} g`} />
+          <Stat label="Carbohidratos" value={`${Math.round(sum(cur, "c") / nDays)} g`} sub={`obj. ${nutriGoal.c} g`} />
+          <Stat label="Grasas" value={`${Math.round(sum(cur, "f") / nDays)} g`} sub={`obj. ${nutriGoal.f} g`} />
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.inkSoft, marginBottom: 4 }}>
+            <span>Cumplimiento del objetivo calórico</span><b style={{ color: goalMet > 110 ? C.rose : C.pine }}>{goalMet}%</b>
+          </div>
+          <Progress value={kcalAvg} max={nutriGoal.kcal} tone={goalMet > 110 ? C.rose : C.pine} />
+        </div>
+      </Card>
+
+      {period !== "dia" && (
+        <Card style={{ marginBottom: 14 }}>
+          <Label>Calorías por día · {PERIOD_LABEL[period]}</Label>
+          <div style={{ height: 180 }}>
+            <ResponsiveContainer>
+              <BarChart data={byDay}>
+                <CartesianGrid vertical={false} stroke={C.line} />
+                <XAxis dataKey="d" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 10 }} width={36} />
+                <Tooltip />
+                <Bar dataKey="kcal" fill={C.pine} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ marginBottom: 14 }}>
+        <Label>Registrar comida (hoy)</Label>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 8, marginBottom: 10 }}>
+          <Select value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} options={["Desayuno", "Comida", "Cena", "Snack"]} />
+          <Input placeholder="kcal" type="number" value={form.kcal} onChange={(e) => setForm({ ...form, kcal: e.target.value })} />
+          <Input placeholder="Prot. g" type="number" value={form.p} onChange={(e) => setForm({ ...form, p: e.target.value })} />
+          <Input placeholder="Carb. g" type="number" value={form.c} onChange={(e) => setForm({ ...form, c: e.target.value })} />
+          <Input placeholder="Grasa g" type="number" value={form.f} onChange={(e) => setForm({ ...form, f: e.target.value })} />
+        </div>
+        <Btn onClick={add}>+ Añadir</Btn>
+      </Card>
+
+      <Card>
+        <Label>Comidas de hoy</Label>
+        {meals.filter((m) => m.date === today()).length === 0 && <div style={{ color: C.inkSoft, fontSize: 14 }}>Aún no has registrado comidas hoy.</div>}
+        {meals.filter((m) => m.date === today()).map((m) => (
+          <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.line}` }}>
+            <div>
+              <b>{m.name}</b>
+              <div style={{ fontSize: 12, color: C.inkSoft }}>{m.kcal} kcal · P {m.p}g · C {m.c}g · G {m.f}g</div>
+            </div>
+            <Btn ghost small tone={C.rose} onClick={() => setMeals(meals.filter((x) => x.id !== m.id))}>Eliminar</Btn>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================ FINANZAS */
+function Finanzas({ expenses, setExpenses, alloc, setAlloc, income, setIncome, savGoals, setSavGoals, notify }) {
+  const [period, setPeriod] = useState("mes");
+  const [form, setForm] = useState({ cat: "Comida", amount: "", note: "" });
+  const CATS = ["Comida", "Transporte", "Ocio", "Hogar", "Salud", "Compras", "Otros"];
+  const days = PERIODS[period];
+  const cur = expenses.filter((e) => inLastDays(e.date, days));
+  const prev = expenses.filter((e) => inPrevWindow(e.date, days));
+  const total = cur.reduce((a, e) => a + e.amount, 0);
+  const prevTotal = prev.reduce((a, e) => a + e.amount, 0);
+  const byCat = CATS.map((c) => ({ cat: c, v: cur.filter((e) => e.cat === c).reduce((a, e) => a + e.amount, 0) })).filter((x) => x.v > 0);
+  const savedTotal = savGoals.reduce((a, g) => a + g.saved, 0);
+
+  const evolution = useMemo(() => {
+    const map = {};
+    for (let i = days - 1; i >= 0; i--) map[addDays(today(), -i)] = 0;
+    cur.forEach((e) => { map[e.date] = (map[e.date] || 0) + e.amount; });
+    let acc = 0;
+    return Object.entries(map).map(([d, v]) => { acc += v; return { d: fmtDay(d), gasto: v, acumulado: acc }; });
+  }, [expenses, period]);
+
+  const add = () => {
+    if (!form.amount) return;
+    setExpenses([...expenses, { id: uid(), date: today(), cat: form.cat, amount: +form.amount, note: form.note }]);
+    setForm({ cat: "Comida", amount: "", note: "" });
+    notify("Gasto registrado 💰");
+  };
+  const allocSum = alloc.reduce((a, x) => a + x.pctVal, 0);
+  const compMsg = pct(total, prevTotal);
+
+  return (
+    <div>
+      <H sub="Gastos, distribución del dinero y metas de ahorro">💰 Finanzas</H>
+      <div style={{ marginBottom: 14 }}><PeriodTabs value={period} onChange={setPeriod} /></div>
+
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <Stat label={`Gasto total · ${PERIOD_LABEL[period]}`} value={eur(total)} sub={<Delta now={total} prev={prevTotal} invert />} tone={C.amber} />
+          <Stat label="Ahorro acumulado" value={eur(savedTotal)} tone={C.pine} />
+          <Stat label="Media diaria" value={eur(total / Math.max(1, days))} />
+        </div>
+        {compMsg !== null && isFinite(compMsg) && (
+          <div style={{ marginTop: 10, fontSize: 13, color: C.inkSoft }}>
+            {compMsg < 0 ? `👏 En este periodo gastaste un ${Math.abs(compMsg)}% menos que en el anterior.` :
+              compMsg > 0 ? `⚠️ En este periodo gastaste un ${compMsg}% más que en el anterior.` : "Gastaste lo mismo que el periodo anterior."}
+          </div>
+        )}
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 14, marginBottom: 14 }}>
+        <Card>
+          <Label>Gasto por categoría</Label>
+          {byCat.length === 0 && <div style={{ color: C.inkSoft, fontSize: 14 }}>Sin gastos en este periodo.</div>}
+          {byCat.sort((a, b) => b.v - a.v).map((x) => (
+            <div key={x.cat} style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
+                <span>{x.cat}</span><b>{eur(x.v)}</b>
+              </div>
+              <Progress value={x.v} max={total} tone={C.amber} />
+            </div>
+          ))}
+        </Card>
+        <Card>
+          <Label>Evolución del gasto acumulado</Label>
+          <div style={{ height: 190 }}>
+            <ResponsiveContainer>
+              <LineChart data={evolution}>
+                <CartesianGrid vertical={false} stroke={C.line} />
+                <XAxis dataKey="d" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 10 }} width={40} />
+                <Tooltip />
+                <Line type="monotone" dataKey="acumulado" stroke={C.amber} strokeWidth={2.5} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      </div>
+
+      <Card style={{ marginBottom: 14 }}>
+        <Label>Registrar gasto (hoy)</Label>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 8, marginBottom: 10 }}>
+          <Select value={form.cat} onChange={(e) => setForm({ ...form, cat: e.target.value })} options={CATS} />
+          <Input placeholder="Importe €" type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+          <Input placeholder="Nota (opcional)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+        </div>
+        <Btn tone={C.amber} onClick={add}>+ Añadir gasto</Btn>
+      </Card>
+
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <Label>Distribución del dinero</Label>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+            Ingreso mensual: <Input type="number" value={income} onChange={(e) => setIncome(+e.target.value)} style={{ width: 100 }} />
+          </div>
+        </div>
+        {alloc.map((a) => (
+          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <div style={{ width: 110, fontSize: 13, fontWeight: 600 }}>{a.name}</div>
+            <input type="range" min="0" max="60" value={a.pctVal} onChange={(e) => setAlloc(alloc.map((x) => x.id === a.id ? { ...x, pctVal: +e.target.value } : x))} style={{ flex: 1, accentColor: C.amber }} />
+            <div style={{ width: 110, fontSize: 13, textAlign: "right" }}><b>{a.pctVal}%</b> · {eur(income * a.pctVal / 100)}</div>
+          </div>
+        ))}
+        <div style={{ fontSize: 12.5, color: allocSum === 100 ? C.pine : C.rose, fontWeight: 700 }}>
+          Total asignado: {allocSum}% {allocSum !== 100 && "(ajusta para llegar al 100 %)"}
+        </div>
+      </Card>
+
+      <Card>
+        <Label>Metas de ahorro</Label>
+        {savGoals.map((g) => (
+          <div key={g.id} style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 4 }}>
+              <b>{g.name}</b><span style={{ color: C.inkSoft }}>{eur(g.saved)} / {eur(g.target)}</span>
+            </div>
+            <Progress value={g.saved} max={g.target} tone={C.pine} />
+            <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
+              <Btn small ghost onClick={() => setSavGoals(savGoals.map((x) => x.id === g.id ? { ...x, saved: Math.min(x.target, x.saved + 50) } : x))}>+50 €</Btn>
+              <Btn small ghost onClick={() => setSavGoals(savGoals.map((x) => x.id === g.id ? { ...x, saved: Math.min(x.target, x.saved + 200) } : x))}>+200 €</Btn>
+              <Btn small ghost tone={C.rose} onClick={() => setSavGoals(savGoals.filter((x) => x.id !== g.id))}>Eliminar</Btn>
+            </div>
+          </div>
+        ))}
+        <AddSavingGoal onAdd={(g) => setSavGoals([...savGoals, g])} />
+      </Card>
+    </div>
+  );
+}
+function AddSavingGoal({ onAdd }) {
+  const [n, setN] = useState(""); const [t, setT] = useState("");
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <Input placeholder="Nueva meta de ahorro" value={n} onChange={(e) => setN(e.target.value)} style={{ flex: 2, minWidth: 160 }} />
+      <Input placeholder="Objetivo €" type="number" value={t} onChange={(e) => setT(e.target.value)} style={{ flex: 1, minWidth: 100 }} />
+      <Btn onClick={() => { if (n && t) { onAdd({ id: uid(), name: n, target: +t, saved: 0 }); setN(""); setT(""); } }}>+ Crear</Btn>
+    </div>
+  );
+}
+
+/* ============================================================ SUEÑO */
+function Sueno({ sleep, setSleep, notify }) {
+  const [period, setPeriod] = useState("semana");
+  const [hours, setHours] = useState(""); const [quality, setQuality] = useState(3);
+  const days = PERIODS[period];
+  const cur = sleep.filter((s) => inLastDays(s.date, days));
+  const prev = sleep.filter((s) => inPrevWindow(s.date, days));
+  const avg = (arr, k) => (arr.length ? arr.reduce((a, x) => a + x[k], 0) / arr.length : 0);
+  const data = cur.slice().sort((a, b) => a.date.localeCompare(b.date)).map((s) => ({ d: fmtDay(s.date), horas: s.hours, calidad: s.quality }));
+  const QUAL = ["😫", "😕", "😐", "🙂", "😴✨"];
+
+  const add = () => {
+    if (!hours) return;
+    setSleep([...sleep.filter((s) => s.date !== today()), { id: uid(), date: today(), hours: +hours, quality }]);
+    setHours(""); notify("Sueño registrado 😴");
+  };
+
+  return (
+    <div>
+      <H sub="Horas dormidas y calidad, con medias por periodo">😴 Sueño</H>
+      <div style={{ marginBottom: 14 }}><PeriodTabs value={period} onChange={setPeriod} includeDay={false} /></div>
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <Stat label="Horas medias" value={`${avg(cur, "hours").toFixed(1)} h`} sub={<Delta now={avg(cur, "hours")} prev={avg(prev, "hours")} />} tone={C.plum} />
+          <Stat label="Calidad media" value={`${avg(cur, "quality").toFixed(1)} / 5`} sub={<Delta now={avg(cur, "quality")} prev={avg(prev, "quality")} />} />
+          <Stat label="Noches registradas" value={cur.length} />
+        </div>
+      </Card>
+      <Card style={{ marginBottom: 14 }}>
+        <Label>Tendencia · {PERIOD_LABEL[period]}</Label>
+        <div style={{ height: 200 }}>
+          <ResponsiveContainer>
+            <LineChart data={data}>
+              <CartesianGrid vertical={false} stroke={C.line} />
+              <XAxis dataKey="d" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+              <YAxis tick={{ fontSize: 10 }} width={30} domain={[0, 10]} />
+              <Tooltip />
+              <Line type="monotone" dataKey="horas" stroke={C.plum} strokeWidth={2.5} dot={false} />
+              <Line type="monotone" dataKey="calidad" stroke={C.sky} strokeWidth={2} dot={false} strokeDasharray="5 4" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <div style={{ fontSize: 12, color: C.inkSoft }}>— Horas &nbsp; ┄ Calidad (1–5)</div>
+      </Card>
+      <Card>
+        <Label>Registrar noche de hoy</Label>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <Input placeholder="Horas (ej. 7.5)" type="number" step="0.1" value={hours} onChange={(e) => setHours(e.target.value)} style={{ width: 130 }} />
+          <div style={{ display: "flex", gap: 4 }}>
+            {QUAL.map((q, i) => (
+              <button key={i} onClick={() => setQuality(i + 1)} style={{ fontSize: 22, border: quality === i + 1 ? `2px solid ${C.plum}` : `1px solid ${C.line}`, background: quality === i + 1 ? C.plumSoft : "#fff", borderRadius: 10, padding: "4px 8px", cursor: "pointer" }}>{q}</button>
+            ))}
+          </div>
+          <Btn tone={C.plum} onClick={add}>Guardar</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================ CALENDARIO */
+function Calendario({ events, setEvents, notify }) {
+  const [view, setView] = useState("mes");
+  const [sel, setSel] = useState(today());
+  const [form, setForm] = useState({ title: "", time: "10:00", place: "", notes: "", remind: true });
+  const [monthRef, setMonthRef] = useState(new Date());
+
+  const add = () => {
+    if (!form.title) return;
+    setEvents([...events, { id: uid(), date: sel, ...form }]);
+    setForm({ title: "", time: "10:00", place: "", notes: "", remind: true });
+    notify("Evento creado 📅");
+  };
+
+  const y = monthRef.getFullYear(), mo = monthRef.getMonth();
+  const first = new Date(y, mo, 1);
+  const startPad = (first.getDay() + 6) % 7;
+  const dim = new Date(y, mo + 1, 0).getDate();
+  const cells = [...Array(startPad).fill(null), ...Array.from({ length: dim }, (_, i) => dstr(new Date(y, mo, i + 1)))];
+  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(sel, i - ((new Date(sel + "T12:00:00").getDay() + 6) % 7)));
+  const evs = (d) => events.filter((e) => e.date === d).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+
+  return (
+    <div>
+      <H sub="Eventos y reuniones con hora, lugar, notas y recordatorios">📅 Calendario</H>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+        {["dia", "semana", "mes"].map((v) => (
+          <Btn key={v} small ghost={view !== v} tone={C.sky} onClick={() => setView(v)}>{v === "dia" ? "Día" : v === "semana" ? "Semana" : "Mes"}</Btn>
+        ))}
+      </div>
+
+      {view === "mes" && (
+        <Card style={{ marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <Btn small ghost tone={C.sky} onClick={() => setMonthRef(new Date(y, mo - 1, 1))}>←</Btn>
+            <b style={{ textTransform: "capitalize" }}>{monthRef.toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</b>
+            <Btn small ghost tone={C.sky} onClick={() => setMonthRef(new Date(y, mo + 1, 1))}>→</Btn>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, fontSize: 11, color: C.inkSoft, marginBottom: 4, textAlign: "center" }}>
+            {["L", "M", "X", "J", "V", "S", "D"].map((d) => <div key={d}>{d}</div>)}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
+            {cells.map((d, i) => d === null ? <div key={i} /> : (
+              <button key={d} onClick={() => setSel(d)} style={{
+                minHeight: 44, borderRadius: 8, cursor: "pointer", fontSize: 13, padding: 3,
+                border: d === sel ? `2px solid ${C.sky}` : `1px solid ${C.line}`,
+                background: d === today() ? C.skySoft : "#fff", position: "relative",
+              }}>
+                {+d.slice(-2)}
+                {evs(d).length > 0 && <div style={{ position: "absolute", bottom: 4, left: "50%", transform: "translateX(-50%)", width: 6, height: 6, borderRadius: 3, background: C.sky }} />}
+              </button>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {view === "semana" && (
+        <Card style={{ marginBottom: 14 }}>
+          {weekDays.map((d) => (
+            <div key={d} onClick={() => setSel(d)} style={{ padding: "8px 6px", borderBottom: `1px solid ${C.line}`, cursor: "pointer", background: d === sel ? C.skySoft : "transparent", borderRadius: 8 }}>
+              <b style={{ fontSize: 13, textTransform: "capitalize" }}>{fmtLong(d)}</b>
+              {evs(d).map((e) => <div key={e.id} style={{ fontSize: 12.5, color: C.inkSoft }}>🕐 {e.time} — {e.title}</div>)}
+              {evs(d).length === 0 && <div style={{ fontSize: 12, color: "#AEB6AE" }}>Sin eventos</div>}
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <Card style={{ marginBottom: 14 }}>
+        <Label style={{}}>Eventos del {fmtLong(sel)}</Label>
+        {evs(sel).length === 0 && <div style={{ color: C.inkSoft, fontSize: 14 }}>Sin eventos este día. Añade uno abajo.</div>}
+        {evs(sel).map((e) => (
+          <div key={e.id} style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: `1px solid ${C.line}` }}>
+            <div>
+              <b>{e.time} · {e.title}</b> {e.remind && "🔔"}
+              <div style={{ fontSize: 12.5, color: C.inkSoft }}>{e.place && `📍 ${e.place}`} {e.notes && ` · ${e.notes}`}</div>
+            </div>
+            <Btn ghost small tone={C.rose} onClick={() => setEvents(events.filter((x) => x.id !== e.id))}>✕</Btn>
+          </div>
+        ))}
+      </Card>
+
+      <Card>
+        <Label>Nuevo evento · {fmtDay(sel)}</Label>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8, marginBottom: 10 }}>
+          <Input placeholder="Título" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+          <Input type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} />
+          <Input placeholder="Lugar" value={form.place} onChange={(e) => setForm({ ...form, place: e.target.value })} />
+          <Input placeholder="Notas" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+        </div>
+        <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+          <input type="checkbox" checked={form.remind} onChange={(e) => setForm({ ...form, remind: e.target.checked })} />
+          Recordarme 15 min antes (mientras la app esté abierta)
+        </label>
+        <Btn tone={C.sky} onClick={add}>+ Crear evento</Btn>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================ DIARIO */
+function Diario({ journal, setJournal, notify }) {
+  const [period, setPeriod] = useState("semana");
+  const MOODS = ["😞", "😕", "😐", "🙂", "😄"];
+  const existing = journal.find((j) => j.date === today());
+  const [text, setText] = useState(existing?.text || "");
+  const [mood, setMood] = useState(existing?.mood || 3);
+  const days = PERIODS[period];
+  const cur = journal.filter((j) => inLastDays(j.date, days)).sort((a, b) => a.date.localeCompare(b.date));
+  const data = cur.map((j) => ({ d: fmtDay(j.date), animo: j.mood }));
+
+  const save = () => {
+    setJournal([...journal.filter((j) => j.date !== today()), { id: uid(), date: today(), text, mood }]);
+    notify("Entrada guardada 📔");
+  };
+
+  return (
+    <div>
+      <H sub="Texto libre por día y seguimiento de ánimo">📔 Diario</H>
+      <Card style={{ marginBottom: 14 }}>
+        <Label>Hoy · {fmtLong(today())}</Label>
+        <div style={{ display: "flex", gap: 5, marginBottom: 10 }}>
+          {MOODS.map((m, i) => (
+            <button key={i} onClick={() => setMood(i + 1)} style={{ fontSize: 24, borderRadius: 10, padding: "4px 8px", cursor: "pointer", border: mood === i + 1 ? `2px solid ${C.rose}` : `1px solid ${C.line}`, background: mood === i + 1 ? C.roseSoft : "#fff" }}>{m}</button>
+          ))}
+        </div>
+        <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="¿Cómo ha ido tu día?" rows={5} style={{ width: "100%", boxSizing: "border-box", padding: 12, borderRadius: 10, border: `1px solid ${C.line}`, fontSize: 14, fontFamily: "inherit", resize: "vertical", background: "#FBFCFA" }} />
+        <div style={{ marginTop: 10 }}><Btn tone={C.rose} onClick={save}>Guardar entrada</Btn></div>
+      </Card>
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+          <Label>Tendencia de ánimo</Label>
+          <PeriodTabs value={period} onChange={setPeriod} includeDay={false} />
+        </div>
+        <div style={{ height: 170 }}>
+          <ResponsiveContainer>
+            <LineChart data={data}>
+              <CartesianGrid vertical={false} stroke={C.line} />
+              <XAxis dataKey="d" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+              <YAxis domain={[1, 5]} ticks={[1, 2, 3, 4, 5]} tick={{ fontSize: 10 }} width={24} />
+              <Tooltip />
+              <Line type="monotone" dataKey="animo" stroke={C.rose} strokeWidth={2.5} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+      <Card>
+        <Label>Entradas recientes</Label>
+        {journal.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 7).map((j) => (
+          <div key={j.id} style={{ padding: "9px 0", borderBottom: `1px solid ${C.line}` }}>
+            <b style={{ fontSize: 13 }}>{MOODS[j.mood - 1]} {fmtLong(j.date)}</b>
+            <div style={{ fontSize: 13.5, color: C.inkSoft, marginTop: 2 }}>{j.text || "(sin texto)"}</div>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================ HÁBITOS */
+function Habitos({ habits, setHabits, habitDone, setHabitDone, notify }) {
+  const [name, setName] = useState("");
+  const streak = (h) => {
+    let s = 0, d = today();
+    if (!habitDone[h.id]?.[d]) d = addDays(d, -1);
+    while (habitDone[h.id]?.[d]) { s++; d = addDays(d, -1); }
+    return s;
+  };
+  const toggle = (h) => {
+    const map = { ...(habitDone[h.id] || {}) };
+    if (map[today()]) delete map[today()]; else map[today()] = true;
+    setHabitDone({ ...habitDone, [h.id]: map });
+  };
+  const last7 = Array.from({ length: 7 }, (_, i) => addDays(today(), i - 6));
+
+  return (
+    <div>
+      <H sub="Rachas diarias: marca cada día que cumplas el hábito">✅ Hábitos</H>
+      <Card style={{ marginBottom: 14 }}>
+        {habits.map((h) => {
+          const doneToday = !!habitDone[h.id]?.[today()];
+          return (
+            <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: `1px solid ${C.line}`, flexWrap: "wrap" }}>
+              <button onClick={() => toggle(h)} style={{ width: 34, height: 34, borderRadius: 10, cursor: "pointer", fontSize: 17, border: `2px solid ${doneToday ? C.pine : C.line}`, background: doneToday ? C.pine : "#fff", color: "#fff" }}>{doneToday ? "✓" : ""}</button>
+              <div style={{ flex: 1, minWidth: 140 }}>
+                <b style={{ fontSize: 14.5 }}>{h.name}</b>
+                <div style={{ fontSize: 12.5, color: C.inkSoft }}>🔥 Racha: <b>{streak(h)}</b> {streak(h) === 1 ? "día" : "días"}</div>
+              </div>
+              <div style={{ display: "flex", gap: 3 }}>
+                {last7.map((d) => (
+                  <div key={d} title={fmtDay(d)} style={{ width: 14, height: 14, borderRadius: 4, background: habitDone[h.id]?.[d] ? C.pine : "#E7EAE3" }} />
+                ))}
+              </div>
+              <Btn small ghost tone={C.rose} onClick={() => setHabits(habits.filter((x) => x.id !== h.id))}>✕</Btn>
+            </div>
+          );
+        })}
+      </Card>
+      <Card>
+        <Label>Nuevo hábito</Label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Input placeholder="Ej. Estirar 10 min" value={name} onChange={(e) => setName(e.target.value)} />
+          <Btn onClick={() => { if (name) { setHabits([...habits, { id: uid(), name }]); setName(""); notify("Hábito creado ✅"); } }}>+ Añadir</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================ ENFOQUE */
+function Enfoque({ focusLog, setFocusLog, subjects, setSubjects, notify }) {
+  const WORK = 25 * 60, BREAK = 5 * 60;
+  const [mode, setMode] = useState("trabajo");
+  const [left, setLeft] = useState(WORK);
+  const [running, setRunning] = useState(false);
+  const [subject, setSubject] = useState("");
+  const [newSub, setNewSub] = useState("");
+
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setLeft((l) => {
+      if (l <= 1) {
+        setRunning(false);
+        if (mode === "trabajo") {
+          setFocusLog((f) => [...f, { id: uid(), date: today(), subject, minutes: 25 }]);
+          notify(`🍅 Pomodoro completado: +25 min en ${subject}`);
+          setMode("descanso"); return BREAK;
+        } else { notify("Descanso terminado, ¡a por otro pomodoro!"); setMode("trabajo"); return WORK; }
+      }
+      return l - 1;
+    }), 1000);
+    return () => clearInterval(t);
+  }, [running, mode, subject]);
+
+  const mm = pad(Math.floor(left / 60)), ss = pad(left % 60);
+  const bySubject = subjects.map((s) => ({
+    s,
+    total: focusLog.filter((f) => f.subject === s).reduce((a, f) => a + f.minutes, 0),
+    week: focusLog.filter((f) => f.subject === s && inLastDays(f.date, 7)).reduce((a, f) => a + f.minutes, 0),
+  }));
+  const maxT = Math.max(1, ...bySubject.map((x) => x.total));
+
+  return (
+    <div>
+      <H sub="Pomodoro y estadísticas por materia o proyecto">⏱️ Enfoque / Estudio</H>
+      <Card style={{ marginBottom: 14, textAlign: "center", background: mode === "trabajo" ? C.panel : C.pineSoft }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 1 }}>
+          {mode === "trabajo" ? "🍅 Sesión de trabajo" : "☕ Descanso"}
+        </div>
+        <div style={{ fontSize: 64, fontWeight: 800, letterSpacing: -2, fontVariantNumeric: "tabular-nums", margin: "6px 0" }}>{mm}:{ss}</div>
+        <div style={{ maxWidth: 260, margin: "0 auto 12px" }}>
+          <Select value={subject} onChange={(e) => setSubject(e.target.value)} options={subjects} />
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+          <Btn onClick={() => setRunning(!running)}>{running ? "⏸ Pausar" : "▶ Iniciar"}</Btn>
+          <Btn ghost onClick={() => { setRunning(false); setLeft(mode === "trabajo" ? WORK : BREAK); }}>↺ Reiniciar</Btn>
+        </div>
+      </Card>
+      <Card style={{ marginBottom: 14 }}>
+        <Label>Tiempo por materia / proyecto</Label>
+        {bySubject.map((x) => (
+          <div key={x.s} style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, marginBottom: 3 }}>
+              <b>{x.s}</b>
+              <span style={{ color: C.inkSoft }}>{Math.round(x.total / 60 * 10) / 10} h total · {x.week} min esta semana</span>
+            </div>
+            <Progress value={x.total} max={maxT} tone={C.slate} />
+          </div>
+        ))}
+      </Card>
+      <Card>
+        <Label>Nueva materia / proyecto</Label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Input placeholder="Ej. Historia" value={newSub} onChange={(e) => setNewSub(e.target.value)} />
+          <Btn onClick={() => { if (newSub && !subjects.includes(newSub)) { setSubjects([...subjects, newSub]); setNewSub(""); } }}>+ Añadir</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================ METAS */
+function Metas({ goals, setGoals, notify }) {
+  const [form, setForm] = useState({ name: "", target: "", unit: "" });
+  return (
+    <div>
+      <H sub="Objetivos personales, académicos o de cualquier ámbito">🎯 Metas y objetivos</H>
+      <Card style={{ marginBottom: 14 }}>
+        {goals.length === 0 && <div style={{ color: C.inkSoft }}>Todavía no tienes metas. Crea la primera abajo.</div>}
+        {goals.map((g) => {
+          const p = Math.round((g.current / g.target) * 100);
+          return (
+            <div key={g.id} style={{ marginBottom: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 4 }}>
+                <b>{g.name}</b>
+                <span style={{ fontSize: 13, color: p >= 100 ? C.pine : C.inkSoft, fontWeight: 700 }}>
+                  {g.current} / {g.target} {g.unit} · {p}% {p >= 100 && "🎉"}
+                </span>
+              </div>
+              <Progress value={g.current} max={g.target} tone={C.sky} />
+              <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
+                <Btn small ghost tone={C.sky} onClick={() => setGoals(goals.map((x) => x.id === g.id ? { ...x, current: Math.min(x.target, x.current + 1) } : x))}>+1 avance</Btn>
+                <Btn small ghost tone={C.rose} onClick={() => setGoals(goals.filter((x) => x.id !== g.id))}>Eliminar</Btn>
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+      <Card>
+        <Label>Nueva meta</Label>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 8, marginBottom: 10 }}>
+          <Input placeholder="Nombre de la meta" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <Input placeholder="Objetivo (número)" type="number" value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })} />
+          <Input placeholder="Unidad (libros, km…)" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} />
+        </div>
+        <Btn tone={C.sky} onClick={() => { if (form.name && form.target) { setGoals([...goals, { id: uid(), name: form.name, target: +form.target, current: 0, unit: form.unit }]); setForm({ name: "", target: "", unit: "" }); notify("Meta creada 🎯"); } }}>+ Crear meta</Btn>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================ NOTAS */
+function Notas({ notes, setNotes, notify }) {
+  const [text, setText] = useState("");
+  return (
+    <div>
+      <H sub="Bandeja de entrada para capturar ideas antes de organizarlas">📝 Notas rápidas</H>
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Input placeholder="Escribe una idea suelta…" value={text} onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && text) { setNotes([{ id: uid(), text, ts: Date.now() }, ...notes]); setText(""); } }} />
+          <Btn onClick={() => { if (text) { setNotes([{ id: uid(), text, ts: Date.now() }, ...notes]); setText(""); notify("Nota capturada 📝"); } }}>+ Capturar</Btn>
+        </div>
+      </Card>
+      <Card>
+        {notes.length === 0 && <div style={{ color: C.inkSoft }}>Bandeja vacía. Captura tu primera idea arriba.</div>}
+        {notes.map((n) => (
+          <div key={n.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "10px 0", borderBottom: `1px solid ${C.line}` }}>
+            <div>
+              <div style={{ fontSize: 14.5 }}>{n.text}</div>
+              <div style={{ fontSize: 11.5, color: C.inkSoft }}>{new Date(n.ts).toLocaleString("es-ES")}</div>
+            </div>
+            <Btn small ghost tone={C.rose} onClick={() => setNotes(notes.filter((x) => x.id !== n.id))}>✕</Btn>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================ RESUMEN DIARIO */
+function Resumen({ meals, nutriGoal, expenses, sleep, events, journal, habits, habitDone, focusLog, setTab }) {
+  const t = today();
+  const dm = meals.filter((m) => m.date === t);
+  const kcal = dm.reduce((a, m) => a + m.kcal, 0);
+  const spent = expenses.filter((e) => e.date === t).reduce((a, e) => a + e.amount, 0);
+  const sl = sleep.find((s) => s.date === t);
+  const jr = journal.find((j) => j.date === t);
+  const evs = events.filter((e) => e.date === t).sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+  const doneH = habits.filter((h) => habitDone[h.id]?.[t]).length;
+  const focusMin = focusLog.filter((f) => f.date === t).reduce((a, f) => a + f.minutes, 0);
+  const MOODS = ["😞", "😕", "😐", "🙂", "😄"];
+
+  const tiles = [
+    { icon: "🍎", title: "Nutrición", tab: "nutricion", tone: C.pineSoft, main: `${kcal} kcal`, sub: `de ${nutriGoal.kcal} objetivo · ${dm.length} comidas`, bar: [kcal, nutriGoal.kcal, C.pine] },
+    { icon: "💰", title: "Gastos", tab: "finanzas", tone: C.amberSoft, main: eur(spent), sub: `${expenses.filter((e) => e.date === t).length} movimientos hoy` },
+    { icon: "😴", title: "Sueño", tab: "sueno", tone: C.plumSoft, main: sl ? `${sl.hours} h` : "—", sub: sl ? `Calidad ${sl.quality}/5` : "Sin registrar" },
+    { icon: "✅", title: "Hábitos", tab: "habitos", tone: C.pineSoft, main: `${doneH}/${habits.length}`, sub: "completados", bar: [doneH, habits.length, C.pine] },
+    { icon: "📔", title: "Ánimo", tab: "diario", tone: C.roseSoft, main: jr ? MOODS[jr.mood - 1] : "—", sub: jr ? "Entrada escrita" : "Sin entrada aún" },
+    { icon: "⏱️", title: "Enfoque", tab: "enfoque", tone: C.skySoft, main: `${focusMin} min`, sub: "de concentración" },
+  ];
+
+  return (
+    <div>
+      <H sub={fmtLong(t)}>📊 Resumen del día</H>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12, marginBottom: 14 }}>
+        {tiles.map((x) => (
+          <div key={x.title} onClick={() => setTab(x.tab)} style={{ background: x.tone, borderRadius: 14, padding: 14, cursor: "pointer" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.inkSoft }}>{x.icon} {x.title}</div>
+            <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: -0.5, margin: "3px 0" }}>{x.main}</div>
+            <div style={{ fontSize: 12, color: C.inkSoft }}>{x.sub}</div>
+            {x.bar && <div style={{ marginTop: 8 }}><Progress value={x.bar[0]} max={x.bar[1]} tone={x.bar[2]} /></div>}
+          </div>
+        ))}
+      </div>
+      <Card style={{ marginBottom: 14 }}>
+        <Label>📅 Agenda de hoy</Label>
+        {evs.length === 0 && <div style={{ color: C.inkSoft, fontSize: 14 }}>No tienes eventos hoy.</div>}
+        {evs.map((e) => (
+          <div key={e.id} style={{ padding: "8px 0", borderBottom: `1px solid ${C.line}`, fontSize: 14 }}>
+            <b>{e.time}</b> — {e.title} {e.place && <span style={{ color: C.inkSoft }}>· 📍 {e.place}</span>}
+          </div>
+        ))}
+      </Card>
+      {jr?.text && (
+        <Card>
+          <Label>📔 Del diario de hoy</Label>
+          <div style={{ fontSize: 14.5, fontStyle: "italic", color: C.inkSoft }}>"{jr.text}"</div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================ TENDENCIAS */
+function Tendencias({ meals, expenses, sleep, journal, habits, habitDone, savGoals }) {
+  const [period, setPeriod] = useState("semana");
+  const days = PERIODS[period];
+
+  const agg = (arr, valFn) => {
+    const cur = arr.filter((x) => inLastDays(x.date, days));
+    const prev = arr.filter((x) => inPrevWindow(x.date, days));
+    return { cur: valFn(cur), prev: valFn(prev) };
+  };
+  const kcal = agg(meals, (a) => a.reduce((s, m) => s + m.kcal, 0));
+  const prot = agg(meals, (a) => a.reduce((s, m) => s + m.p, 0));
+  const gasto = agg(expenses, (a) => a.reduce((s, e) => s + e.amount, 0));
+  const sHours = agg(sleep, (a) => (a.length ? a.reduce((s, x) => s + x.hours, 0) / a.length : 0));
+  const mood = agg(journal, (a) => (a.length ? a.reduce((s, x) => s + x.mood, 0) / a.length : 0));
+  const habitCount = (win) => {
+    let n = 0;
+    habits.forEach((h) => Object.keys(habitDone[h.id] || {}).forEach((d) => { if (win(d)) n++; }));
+    return n;
+  };
+  const hab = { cur: habitCount((d) => inLastDays(d, days)), prev: habitCount((d) => inPrevWindow(d, days)) };
+
+  const series = useMemo(() => {
+    const out = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = addDays(today(), -i);
+      out.push({
+        d: fmtDay(d),
+        kcal: meals.filter((m) => m.date === d).reduce((a, m) => a + m.kcal, 0),
+        gasto: expenses.filter((e) => e.date === d).reduce((a, e) => a + e.amount, 0),
+        sueño: sleep.find((s) => s.date === d)?.hours || null,
+        animo: journal.find((j) => j.date === d)?.mood || null,
+      });
+    }
+    return out;
+  }, [period, meals, expenses, sleep, journal]);
+
+  const rows = [
+    { label: "Calorías totales", v: Math.round(kcal.cur), p: kcal.prev, unit: "kcal", invert: true },
+    { label: "Proteína total", v: Math.round(prot.cur), p: prot.prev, unit: "g" },
+    { label: "Gasto total", v: gasto.cur, p: gasto.prev, unit: "€", invert: true, money: true },
+    { label: "Sueño medio", v: +sHours.cur.toFixed(1), p: sHours.prev, unit: "h" },
+    { label: "Ánimo medio", v: +mood.cur.toFixed(1), p: mood.prev, unit: "/5" },
+    { label: "Hábitos completados", v: hab.cur, p: hab.prev, unit: "" },
+  ];
+
+  return (
+    <div>
+      <H sub="Tendencias agregadas y comparativas entre periodos">📈 Tendencias</H>
+      <div style={{ marginBottom: 14 }}><PeriodTabs value={period} onChange={setPeriod} includeDay={false} /></div>
+      <Card style={{ marginBottom: 14 }}>
+        <Label>Comparativa: {PERIOD_LABEL[period]} vs periodo anterior</Label>
+        {rows.map((r) => (
+          <div key={r.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${C.line}`, flexWrap: "wrap", gap: 6 }}>
+            <span style={{ fontSize: 14 }}>{r.label}</span>
+            <span style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <b style={{ fontSize: 15 }}>{r.money ? eur(r.v) : `${r.v} ${r.unit}`}</b>
+              <Delta now={r.v} prev={r.p} invert={r.invert} />
+            </span>
+          </div>
+        ))}
+        <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 8 }}>▲/▼ verde = evolución favorable (en gasto y calorías, bajar es positivo).</div>
+      </Card>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(290px,1fr))", gap: 14 }}>
+        {[["kcal", "Calorías por día", C.pine], ["gasto", "Gasto por día (€)", C.amber], ["sueño", "Horas de sueño", C.plum], ["animo", "Ánimo (1–5)", C.rose]].map(([k, title, color]) => (
+          <Card key={k}>
+            <Label>{title}</Label>
+            <div style={{ height: 160 }}>
+              <ResponsiveContainer>
+                <LineChart data={series}>
+                  <CartesianGrid vertical={false} stroke={C.line} />
+                  <XAxis dataKey="d" tick={{ fontSize: 9 }} interval="preserveStartEnd" />
+                  <YAxis tick={{ fontSize: 9 }} width={32} />
+                  <Tooltip />
+                  <Line type="monotone" dataKey={k} stroke={color} strokeWidth={2.2} dot={false} connectNulls />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+    /* ---- mount ---- */
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(VitallyOne));
+  </script>
+</body>
+</html>
